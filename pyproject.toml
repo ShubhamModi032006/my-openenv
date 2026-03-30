@@ -15,8 +15,12 @@ dependencies = [
     "requests>=2.31.0",
     "httpx>=0.25.0",
     "python-dotenv",
-    "openai"
+    "openai",
+    "openenv>=0.2.0"
 ]
+
+[project.scripts]
+server = "server.app:app"
 
 [project.optional-dependencies]
 test = [

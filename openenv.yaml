@@ -2,7 +2,7 @@ spec_version: "1.0"
 name: "email-triage-openenv"
 version: "0.1.0"
 description: "A real-world email triage simulation environment for AI agents."
-entrypoint: "api/server.py"
+entrypoint: "server/app.py"
 schema:
   action: >
     {"type": "object", "properties": {"priority": {"type": "string"}, "department": {"type": "string"}, "reply_draft": {"type": "string"}, "final_action": {"type": "string"}}}
