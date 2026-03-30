@@ -1,0 +1,16 @@
+spec_version: "1.0"
+name: "email-triage-openenv"
+version: "0.1.0"
+description: "A real-world email triage simulation environment for AI agents."
+entrypoint: "api/server.py"
+schema:
+  action: >
+    {"type": "object", "properties": {"priority": {"type": "string"}, "department": {"type": "string"}, "reply_draft": {"type": "string"}, "final_action": {"type": "string"}}}
+  observation: >
+    {"type": "object", "properties": {"current_email": {"type": "object"}, "emails_remaining": {"type": "integer"}, "task_description": {"type": "string"}}}
+  reward: >
+    {"type": "object", "properties": {"score": {"type": "number"}, "message": {"type": "string"}}}
+endpoints:
+  reset: "/reset"
+  step: "/step"
+  state: "/state"
