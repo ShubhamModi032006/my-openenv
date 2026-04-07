@@ -4,6 +4,12 @@ import time
 from openai import OpenAI
 import requests
 
+# Required variables per OpenEnv template
+API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")
+HF_TOKEN = os.getenv("HF_TOKEN")
+LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
+
 API_URL = "http://localhost:7860"
 
 def run_task_level(client, task_level):
@@ -48,9 +54,10 @@ Respond ONLY in JSON matching this schema, providing the required fields for the
 }}
 """
 
+            print("STEP")
             try:
                 response = client.chat.completions.create(
-                    model="gpt-4o-mini",
+                    model=MODEL_NAME,
                     messages=[{"role": "user", "content": prompt}],
                     response_format={"type": "json_object"},
                     temperature=0.0
@@ -97,6 +104,8 @@ Respond ONLY in JSON matching this schema, providing the required fields for the
             steps += 1
 
         print(f"✅ [{task_level.upper()} COMPLETE] Total Score: {total_score} out of {steps} possible\n")
+        print("END")
+        
     except Exception as e:
         print(f"  [X] run_task_level({task_level!r}) failed with unhandled error: {e}")
 
@@ -104,13 +113,14 @@ if __name__ == "__main__":
     from dotenv import load_dotenv
     load_dotenv()
 
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        print("ERROR: Set OPENAI_API_KEY env var to run baseline")
-        raise SystemExit(1)
+    # The validator requires that the client is instantiated via these exact variables.
+    # If the environment passed HF_TOKEN, use it, otherwise fall back to OPENAI_API_KEY
+    api_key = HF_TOKEN or os.getenv("OPENAI_API_KEY", "dummy-key")
 
-    # Standard OpenAI — no custom base_url
-    client = OpenAI(api_key=api_key)
+    client = OpenAI(
+        base_url=API_BASE_URL,
+        api_key=api_key
+    )
 
     for level in ["easy", "medium", "hard"]:
         run_task_level(client, level)
