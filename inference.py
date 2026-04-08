@@ -10,164 +10,230 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Configure comprehensive logging
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
+# ─────────────────────────────────────────────
+#  Logging Setup — clean, minimal, human-friendly
+# ─────────────────────────────────────────────
+class _PrettyFormatter(logging.Formatter):
+    """Color-coded, compact log formatter."""
+    COLORS = {
+        logging.DEBUG:    "\033[90m",   # grey
+        logging.INFO:     "\033[0m",    # default
+        logging.WARNING:  "\033[33m",   # yellow
+        logging.ERROR:    "\033[31m",   # red
+        logging.CRITICAL: "\033[1;31m", # bold red
+    }
+    RESET = "\033[0m"
 
-# Required variables per OpenEnv template
-API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
-MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")
-HF_TOKEN = os.getenv("HF_TOKEN")
+    def format(self, record):
+        color = self.COLORS.get(record.levelno, self.RESET)
+        ts = self.formatTime(record, "%H:%M:%S")
+        level = f"{record.levelname:<8}"
+        return f"{color}{ts} {level} {record.getMessage()}{self.RESET}"
+
+
+def _setup_logging():
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG)
+
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(_PrettyFormatter())
+    root.addHandler(handler)
+
+    # Silence noisy libraries — we only care about our own logs
+    for noisy in ("httpx", "httpcore", "openai._base_client", "urllib3"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
+
+_setup_logging()
+log = logging.getLogger(__name__)
+
+# ─────────────────────────────────────────────
+#  Config
+# ─────────────────────────────────────────────
+API_BASE_URL     = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
+MODEL_NAME       = os.getenv("MODEL_NAME",   "gpt-4o-mini")
+HF_TOKEN         = os.getenv("HF_TOKEN")
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
+API_URL          = "http://localhost:7860"
 
-API_URL = "http://localhost:7860"
 
-def run_task_level(client, task_level):
+# ─────────────────────────────────────────────
+#  Helpers
+# ─────────────────────────────────────────────
+def _banner(text: str, char="═"):
+    width = 58
+    log.info(char * width)
+    log.info(f"  {text}")
+    log.info(char * width)
+
+
+def _section(text: str):
+    log.info(f"  ▶ {text}")
+
+
+def _ok(text: str):
+    log.info(f"  ✅ {text}")
+
+
+def _fail(text: str):
+    log.error(f"  ❌ {text}")
+
+
+def _warn(text: str):
+    log.warning(f"  ⚠️  {text}")
+
+
+# ─────────────────────────────────────────────
+#  Core task runner
+# ─────────────────────────────────────────────
+def run_task_level(client, task_level: str):
+    _banner(f"TASK LEVEL: {task_level.upper()}")
+    print("START")
+
+    # ── Reset environment ──────────────────────
+    _section(f"Resetting environment  [{task_level}]")
     try:
-        logging.info(f"========== STARTING TASK LEVEL: {task_level.upper()} ==========")
-        # Mandated exact stdout logs from OpenEnv validator requirements
-        print("START")
-
-        logging.debug(f"[HTTP REQ] POST {API_URL}/reset | Payload: {{'task_level': '{task_level}'}}")
-        # Reset env
         res = requests.post(f"{API_URL}/reset", json={"task_level": task_level})
-        
-        logging.debug(f"[HTTP RES] POST {API_URL}/reset | Status: {res.status_code}")
-        logging.debug(f"[HTTP RES BODY] raw text: {res.text}")
-
-        if res.status_code != 200:
-            logging.error(f"Failed to reset environment. HTTP {res.status_code}: {res.text}")
-            return
-
-        data = res.json()
-        session_id = data.get("session_id")
-        obs = data.get("observation")
-        done = False
-        total_score = 0.0
-        steps = 0
-
-        while not done:
-            email = obs.get("current_email")
-            if not email:
-                logging.debug("No 'current_email' in observation. Breaking loop.")
-                break
-
-            task_desc = obs.get("task_description")
-
-            prompt = f"""You are an AI Email Assistant.
-Task: {task_desc}
-
-Email Subject: {email['subject']}
-Email Sender: {email['sender']}
-Email Body: {email['body']}
-
-Respond ONLY in JSON matching this schema, providing the required fields for the task:
-{{
-  "priority": "high|medium|low",
-  "department": "support|sales|hr",
-  "reply_draft": "your drafted text",
-  "final_action": "archive|escalate"
-}}
-"""
-            # Mandated exact stdout logs from OpenEnv validator requirements
-            print("STEP")
-            
-            logging.debug(f"[OpenAI REQ] Sending chat completion to model: {MODEL_NAME}")
-            logging.debug(f"[OpenAI PROMPT]\n{prompt}")
-
-            try:
-                response = client.chat.completions.create(
-                    model=MODEL_NAME,
-                    messages=[{"role": "user", "content": prompt}],
-                    response_format={"type": "json_object"},
-                    temperature=0.0
-                )
-
-                raw_response = response.choices[0].message.content
-                logging.debug(f"[OpenAI RES SUCCESS] Received response.")
-                logging.debug(f"[OpenAI RAW RESPONSE]\n{raw_response}")
-
-                action_json = raw_response
-                action_dict = json.loads(action_json)
-            except Exception as e:
-                logging.error(f"[OpenAI ERR] Exception during OpenAI API call: {e}")
-                logging.error(f"Traceback:\n{traceback.format_exc()}")
-                action_dict = {}
-
-            logging.info(f"Action parsed for email '{email.get('subject', 'N/A')}': {action_dict}")
-
-            payload = {
-                "session_id": session_id,
-                "action": action_dict
-            }
-            
-            logging.debug(f"[HTTP REQ] POST {API_URL}/step | Payload: {payload}")
-            try:
-                step_res = requests.post(f"{API_URL}/step", json=payload)
-                logging.debug(f"[HTTP RES] POST {API_URL}/step | Status: {step_res.status_code}")
-                logging.debug(f"[HTTP RES BODY] raw text: {step_res.text}")
-                
-                step_res.raise_for_status()
-                step_data = step_res.json()
-            except Exception as e:
-                logging.error(f"[HTTP ERR] local API /step request failed: {e}")
-                logging.error(f"Traceback:\n{traceback.format_exc()}")
-                break
-
-            obs = step_data.get("observation", {})
-            reward = step_data.get("reward", {})
-            done = step_data.get("done", True)
-
-            score = reward.get("score", 0.0)
-            msg = reward.get("message", "")
-            
-            logging.debug(f"[STEP COMPLETION] Reward={score}/1.0 | done={done} | message: {msg}")
-            
-            total_score += score
-            steps += 1
-
-        logging.info(f"✅ [{task_level.upper()} COMPLETE] Total Score: {total_score} out of {steps} possible")
-        # Mandated exact stdout logs from OpenEnv validator requirements
-        print("END")
-        
+        res.raise_for_status()
     except Exception as e:
-        logging.error(f"run_task_level({task_level!r}) failed with unhandled exception: {e}")
-        logging.error(f"Traceback:\n{traceback.format_exc()}")
+        _fail(f"Could not reach local server at {API_URL}/reset — is it running?  ({e})")
+        return
 
+    data       = res.json()
+    session_id = data.get("session_id")
+    obs        = data.get("observation", {})
+    log.debug(f"    session_id = {session_id}")
+
+    done        = False
+    total_score = 0.0
+    step_num    = 0
+
+    # ── Step loop ─────────────────────────────
+    while not done:
+        email = obs.get("current_email")
+        if not email:
+            _warn("No current_email in observation — stopping loop.")
+            break
+
+        step_num += 1
+        subject = email.get("subject", "N/A")
+        sender  = email.get("sender",  "N/A")
+
+        log.info("")
+        log.info(f"  ── Step {step_num}  │  \"{subject}\"  ({sender})")
+
+        task_desc = obs.get("task_description", "")
+
+        prompt = (
+            f"You are an AI Email Assistant.\n"
+            f"Task: {task_desc}\n\n"
+            f"Email Subject: {subject}\n"
+            f"Email Sender:  {sender}\n"
+            f"Email Body:    {email['body']}\n\n"
+            f"Respond ONLY in JSON matching this schema:\n"
+            f"{{\n"
+            f'  "priority":     "high|medium|low",\n'
+            f'  "department":   "support|sales|hr",\n'
+            f'  "reply_draft":  "your drafted text",\n'
+            f'  "final_action": "archive|escalate"\n'
+            f"}}\n"
+        )
+
+        # ── Call LLM ──────────────────────────
+        print("STEP")
+        log.debug(f"    → Calling model: {MODEL_NAME}")
+
+        action_dict = {}
+        try:
+            response = client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+                temperature=0.0,
+            )
+            raw = response.choices[0].message.content
+            action_dict = json.loads(raw)
+            log.debug(f"    ← Model replied OK  │  {list(action_dict.keys())}")
+
+        except Exception as exc:
+            err_str = str(exc)
+
+            # ── Auth error — fail fast, don't loop ──
+            if "401" in err_str or "invalid_api_key" in err_str or "AuthenticationError" in type(exc).__name__:
+                _fail(
+                    "Groq/OpenAI returned 401 Unauthorized — your API key is invalid or expired.\n"
+                    "      Fix: update GROQ_API_KEY in your .env file and restart."
+                )
+                # Stop the whole run — there's no point continuing
+                return
+
+            _warn(f"LLM call failed: {exc}  →  sending empty action")
+            log.debug(f"    {traceback.format_exc().strip()}")
+
+        # ── Send action to env ─────────────────
+        payload = {"session_id": session_id, "action": action_dict}
+        try:
+            step_res = requests.post(f"{API_URL}/step", json=payload)
+            step_res.raise_for_status()
+            step_data = step_res.json()
+        except Exception as e:
+            _fail(f"POST /step failed: {e}")
+            break
+
+        obs    = step_data.get("observation", {})
+        reward = step_data.get("reward", {})
+        done   = step_data.get("done", True)
+        info   = step_data.get("info",   {})
+
+        score = reward.get("score",   0.0)
+        msg   = reward.get("message", "")
+        total_score += score
+
+        # Colour-code the score
+        score_symbol = "✅" if score >= 0.5 else ("⚠️ " if score >= 0 else "❌")
+        log.info(f"    {score_symbol}  Reward: {score:+.1f}   │  {msg}")
+
+        if info.get("error"):
+            _fail(f"Server error info: {info['error']}")
+
+    # ── Summary ───────────────────────────────
+    log.info("")
+    _banner(f"{task_level.upper()} COMPLETE  │  Score: {total_score:+.2f} over {step_num} steps", char="─")
+    print("END")
+
+
+# ─────────────────────────────────────────────
+#  Entry point
+# ─────────────────────────────────────────────
 if __name__ == "__main__":
     try:
-        logging.info(f"--- Script Startup ---")
-        logging.info(f"Python Version: {sys.version.split()[0]}")
-        
-        api_key_present = "OPENAI_API_KEY" in os.environ
-        hf_token_present = "HF_TOKEN" in os.environ
-        
-        logging.info("Checking Environment Variables:")
-        logging.info(f"  - OPENAI_API_KEY present: {api_key_present}")
-        logging.info(f"  - HF_TOKEN present:       {hf_token_present}")
-        logging.info(f"  - API_BASE_URL:           {API_BASE_URL}")
-        logging.info(f"  - MODEL_NAME:             {MODEL_NAME}")
-        logging.info(f"  - LOCAL API SERVER:       {API_URL}")
-        
-        # The validator requires that the client is instantiated via these exact variables.
-        # If the environment passed HF_TOKEN, use it, otherwise fall back to OPENAI_API_KEY
-        api_key = HF_TOKEN or os.getenv("OPENAI_API_KEY", "dummy-key")
+        _banner("EMAIL TRIAGE AGENT  —  STARTUP")
+        log.info(f"  Python     : {sys.version.split()[0]}")
+        log.info(f"  Model      : {MODEL_NAME}")
+        log.info(f"  API base   : {API_BASE_URL}")
+        log.info(f"  Local env  : {API_URL}")
 
-        client = OpenAI(
-            base_url=API_BASE_URL,
-            api_key=api_key
-        )
+        api_key   = os.getenv("OPENAI_API_KEY", "")
+        hf_present = bool(HF_TOKEN)
+        log.info(f"  OPENAI_KEY : {'✅ set' if api_key else '❌ missing — LLM calls will fail'}")
+        log.info(f"  HF_TOKEN   : {'✅ set' if hf_present else '❌ missing'}")
+
+        if not api_key:
+            log.critical("  OPENAI_API_KEY is not set — cannot make LLM calls. Exiting.")
+            raise SystemExit(1)
+
+        # NOTE: Use OPENAI_API_KEY for LLM (Groq) calls.
+        # HF_TOKEN is for Hugging Face authentication only — do NOT use it as the LLM key.
+        client = OpenAI(base_url=API_BASE_URL, api_key=api_key)
 
         for level in ["easy", "medium", "hard"]:
             run_task_level(client, level)
             time.sleep(1)
 
     except Exception as e:
-        logging.critical(f"FATAL ERROR in __main__ block: {e}")
-        logging.critical(f"Traceback:\n{traceback.format_exc()}")
+        log.critical(f"FATAL: {e}")
+        log.debug(traceback.format_exc())
         raise
     finally:
         print("DONE")
