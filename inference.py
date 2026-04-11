@@ -498,9 +498,10 @@ if __name__ == "__main__":
             log.error(f"Banner/startup logging failed: {e}")
 
         try:
-            api_key    = os.getenv("OPENAI_API_KEY", "")
-            hf_present = bool(HF_TOKEN)
-            log.info(f"  OPENAI_KEY : {'[OK] set' if api_key else '[FAIL] missing - will use baseline fallback'}")
+            hf_token = os.getenv("HF_TOKEN")
+            api_key = hf_token or os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY") or ""
+            hf_present = bool(hf_token)
+            log.info(f"  API_KEY    : {'[OK] set' if api_key else '[FAIL] missing - will use baseline fallback'}")
             log.info(f"  HF_TOKEN   : {'[OK] set' if hf_present else '[FAIL] missing'}")
         except Exception as e:
             log.error(f"Env-var check failed: {e}")
@@ -508,7 +509,7 @@ if __name__ == "__main__":
 
         if not api_key:
             log.critical(
-                "  OPENAI_API_KEY is not set — LLM calls will fail. "
+                "  API_KEY/HF_TOKEN is not set — LLM calls will fail. "
                 "Continuing with baseline fallback scores."
             )
 
