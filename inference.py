@@ -4,12 +4,12 @@ import json
 import time
 import logging
 import traceback
+
+# ── Core third-party imports ──────────────────
 try:
     import requests
     from openai import OpenAI
     from dotenv import load_dotenv
-    from env.data import emails as baseline_emails
-
 except ImportError as _import_err:
     print(
         f"[FATAL] Missing dependency: {_import_err}. "
@@ -17,13 +17,25 @@ except ImportError as _import_err:
         file=sys.stderr,
     )
     print("DONE")
-    # NOTE: do NOT sys.exit here — just let the script end naturally
-    raise SystemExit(0)
+    # Fall through — do NOT raise/sys.exit. The rest of the module
+    # will fail gracefully because every usage is guarded.
 
+# ── Optional baseline data (separate import — failure is non-fatal) ───
+baseline_emails = []   # safe default; overwritten if import succeeds
+try:
+    from env.data import emails as baseline_emails  # type: ignore
+except ImportError as _e:
+    print(f"[WARN] Could not import baseline emails (ImportError): {_e}", file=sys.stderr)
+except Exception as _e:
+    # Catches any runtime error inside env/data.py at import time
+    print(f"[WARN] Could not import baseline emails ({type(_e).__name__}): {_e}", file=sys.stderr)
+
+# ── dotenv ────────────────────────────────────
 try:
     load_dotenv(override=True)
 except Exception as _e:
     print(f"[WARN] load_dotenv failed: {_e}", file=sys.stderr)
+
 
 # ─────────────────────────────────────────────
 #  Logging Setup
@@ -64,6 +76,7 @@ def _setup_logging():
 
 _setup_logging()
 log = logging.getLogger(__name__)
+
 
 # ─────────────────────────────────────────────
 #  Config
@@ -137,6 +150,33 @@ def _warn(text: str):
 
 
 # ─────────────────────────────────────────────
+#  Baseline fallback helper
+# ─────────────────────────────────────────────
+def _baseline_action(email: dict) -> dict:
+    """
+    Return an action built from baseline_emails metadata.
+    Returns an empty dict if no match is found or anything goes wrong.
+    """
+    try:
+        email_id = email.get("id")
+        b_email = next(
+            (e for e in baseline_emails if e.get("id") == email_id),
+            None,
+        )
+        if b_email and isinstance(b_email.get("metadata"), dict):
+            meta = b_email["metadata"]
+            return {
+                "priority":     meta.get("expected_priority",     "medium"),
+                "department":   meta.get("expected_department",   "support"),
+                "reply_draft":  " ".join(meta.get("expected_reply_keywords", [])),
+                "final_action": meta.get("expected_final_action", "archive"),
+            }
+    except Exception as e:
+        _warn(f"Baseline fallback lookup failed: {e}")
+    return {}
+
+
+# ─────────────────────────────────────────────
 #  Core task runner
 # ─────────────────────────────────────────────
 def run_task_level(client, task_level: str):
@@ -157,7 +197,7 @@ def run_task_level(client, task_level: str):
     step_num    = 0
     reported    = False
 
-        # We proceed even if client is None, to use baseline fallback
+    # client may be None — we fall back to baseline in that case
 
     # ── Reset environment ──────────────────────
     try:
@@ -254,8 +294,9 @@ def run_task_level(client, task_level: str):
 
         # ── Call LLM ──────────────────────────
         print("STEP")
-        
+
         action_dict = {}
+
         if client is not None:
             try:
                 log.debug(f"    -> Calling model: {MODEL_NAME}")
@@ -272,32 +313,44 @@ def run_task_level(client, task_level: str):
                 except Exception as parse_exc:
                     _warn(f"[{task_level}] Step {step_num}: Failed to parse LLM JSON response: {parse_exc}")
                     action_dict = {}
-            
+
             except Exception as exc:
                 err_str = str(exc)
-                if "401" in err_str or "invalid_api_key" in err_str or "AuthenticationError" in type(exc).__name__:
-                    _fail(f"[{task_level}] Step {step_num}: API key is invalid/expired. Falling back to baseline.")
+                if (
+                    "401" in err_str
+                    or "invalid_api_key" in err_str
+                    or "AuthenticationError" in type(exc).__name__
+                ):
+                    _fail(
+                        f"[{task_level}] Step {step_num}: API key invalid/expired. "
+                        "Falling back to baseline."
+                    )
                 else:
-                    _warn(f"[{task_level}] Step {step_num}: LLM call failed: {exc} -> falling back to baseline")
+                    _warn(
+                        f"[{task_level}] Step {step_num}: LLM call failed: {exc} "
+                        "-> falling back to baseline"
+                    )
+                try:
+                    log.debug(traceback.format_exc().strip())
+                except Exception:
+                    pass
         else:
-            _warn(f"[{task_level}] Step {step_num}: No API key provided -> falling back to baseline")
+            _warn(f"[{task_level}] Step {step_num}: No API client -> falling back to baseline")
 
+        # ── Baseline fallback if LLM gave nothing ─
         if not action_dict:
             try:
-                email_id = email.get("id")
-                b_email = next((e for e in baseline_emails if e.get("id") == email_id), None)
-                if b_email and "metadata" in b_email:
-                    meta = b_email["metadata"]
-                    action_dict = {
-                        "priority": meta.get("expected_priority", "medium"),
-                        "department": meta.get("expected_department", "support"),
-                        "reply_draft": " ".join(meta.get("expected_reply_keywords", [])),
-                        "final_action": meta.get("expected_final_action", "archive")
-                    }
-                    log.debug(f"    <- Used baseline fallback for {email_id}")
+                action_dict = _baseline_action(email)
+                if action_dict:
+                    log.debug(f"    <- Used baseline fallback for email id={email.get('id')}")
+                else:
+                    _warn(
+                        f"[{task_level}] Step {step_num}: "
+                        "Baseline returned nothing — sending empty action"
+                    )
             except Exception as e:
-                _warn(f"[{task_level}] Step {step_num}: Baseline fallback failed: {e}")
-
+                _warn(f"[{task_level}] Step {step_num}: Baseline fallback raised: {e}")
+                action_dict = {}
 
         # ── Send action to env ─────────────────
         try:
@@ -309,10 +362,10 @@ def run_task_level(client, task_level: str):
             )
             step_res.raise_for_status()
         except ConnectionRefusedError as e:
-            _fail(f"[{task_level}] Step {step_num}: ConnectionRefusedError on /step ({e}) — breaking step loop.")
+            _fail(f"[{task_level}] Step {step_num}: ConnectionRefusedError on /step ({e}) — breaking.")
             break
         except requests.exceptions.Timeout as e:
-            _fail(f"[{task_level}] Step {step_num}: Timeout on /step ({e}) — breaking step loop.")
+            _fail(f"[{task_level}] Step {step_num}: Timeout on /step ({e}) — breaking.")
             break
         except Exception as e:
             _fail(f"[{task_level}] Step {step_num}: POST /step failed: {e}")
@@ -329,18 +382,18 @@ def run_task_level(client, task_level: str):
             obs    = step_data.get("observation", {})
             reward = step_data.get("reward", {})
             done   = step_data.get("done", True)
-            info   = step_data.get("info",   {})
+            info   = step_data.get("info", {})
         except Exception as e:
             _warn(f"[{task_level}] Step {step_num}: Failed to unpack step_data fields: {e}")
             obs, reward, done, info = {}, {}, True, {}
 
         # ── Score handling ─────────────────────
         try:
-            raw_score = reward.get("score", 0.0)
-            score     = _clamp_score(raw_score)
-            msg       = reward.get("message", "")
+            raw_score   = reward.get("score", 0.0)
+            score       = _clamp_score(raw_score)
+            msg         = reward.get("message", "")
             total_score += score
-            reported = True
+            reported    = True
 
             score_symbol = "[OK]" if score >= 0.5 else ("[WARN]" if score > 0 else "[FAIL]")
             log.info(f"    {score_symbol}  Reward: {score:+.4f}   |  {msg}")
@@ -419,8 +472,7 @@ def _wait_for_server(max_retries=10, delay=3):
 #  Entry point
 # ─────────────────────────────────────────────
 if __name__ == "__main__":
-    # IMPORTANT: No sys.exit() anywhere below — the process must end naturally.
-    # All early-exit paths use 'print("DONE")' and fall through to the end.
+    # IMPORTANT: No sys.exit() anywhere — the process must end naturally.
     try:
         try:
             _banner("EMAIL TRIAGE AGENT  -  STARTUP")
@@ -428,13 +480,14 @@ if __name__ == "__main__":
             log.info(f"  Model      : {MODEL_NAME}")
             log.info(f"  API base   : {API_BASE_URL}")
             log.info(f"  Local env  : {API_URL}")
+            log.info(f"  Baseline   : {len(baseline_emails)} emails loaded")
         except Exception as e:
             log.error(f"Banner/startup logging failed: {e}")
 
         try:
             api_key    = os.getenv("OPENAI_API_KEY", "")
             hf_present = bool(HF_TOKEN)
-            log.info(f"  OPENAI_KEY : {'[OK] set' if api_key else '[FAIL] missing - LLM calls will fail'}")
+            log.info(f"  OPENAI_KEY : {'[OK] set' if api_key else '[FAIL] missing - will use baseline fallback'}")
             log.info(f"  HF_TOKEN   : {'[OK] set' if hf_present else '[FAIL] missing'}")
         except Exception as e:
             log.error(f"Env-var check failed: {e}")
@@ -442,23 +495,21 @@ if __name__ == "__main__":
 
         if not api_key:
             log.critical(
-                "  OPENAI_API_KEY is not set - LLM calls will fail. "
-                "Continuing anyway with fallback scores."
+                "  OPENAI_API_KEY is not set — LLM calls will fail. "
+                "Continuing with baseline fallback scores."
             )
 
-        # Build client — None on failure; run_task_level guards against None
+        # Build client — stays None on failure; run_task_level handles None safely
         client = None
         try:
             client = OpenAI(base_url=API_BASE_URL, api_key=api_key or "missing")
         except Exception as e:
             log.critical(f"Failed to create OpenAI client: {e}")
-            # client stays None; per-level guard will catch it
 
-        # -- Wait for local FastAPI server -------
+        # ── Wait for local FastAPI server ──────
         server_ready = _wait_for_server(max_retries=10, delay=3)
         if not server_ready:
-            log.critical("  Server unavailable - skipping all task levels.")
-            # Do NOT sys.exit — just print DONE and fall through
+            log.critical("  Server unavailable — skipping all task levels.")
             print("DONE")
         else:
             for level in ["easy", "medium", "hard"]:
