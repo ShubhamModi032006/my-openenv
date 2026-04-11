@@ -189,13 +189,14 @@ def run_task_level(client, task_level: str):
     """
     try:
         _banner(f"TASK LEVEL: {task_level.upper()}")
-        print("START")
+        print(f"[START] task={task_level} env=email-triage model={MODEL_NAME}")
     except Exception:
         pass
 
     total_score = 0.5
     step_num    = 0
     reported    = False
+    rewards_list = []
 
     # client may be None — we fall back to baseline in that case
 
@@ -214,15 +215,15 @@ def run_task_level(client, task_level: str):
         res.raise_for_status()
     except ConnectionRefusedError as e:
         _fail(f"[{task_level}] ConnectionRefusedError on /reset — server not running? ({e})")
-        _report_summary(task_level, total_score, step_num)
+        _report_summary(task_level, total_score, step_num, rewards_list, False)
         return
     except requests.exceptions.Timeout as e:
         _fail(f"[{task_level}] Timeout on /reset ({e})")
-        _report_summary(task_level, total_score, step_num)
+        _report_summary(task_level, total_score, step_num, rewards_list, False)
         return
     except Exception as e:
         _fail(f"[{task_level}] Could not reach /reset — is the server running? ({e})")
-        _report_summary(task_level, total_score, step_num)
+        _report_summary(task_level, total_score, step_num, rewards_list, False)
         return
 
     # ── Parse reset response ───────────────────
@@ -233,7 +234,7 @@ def run_task_level(client, task_level: str):
         log.debug(f"    session_id = {session_id}")
     except Exception as e:
         _fail(f"[{task_level}] Failed to parse /reset response JSON: {e}")
-        _report_summary(task_level, total_score, step_num)
+        _report_summary(task_level, total_score, step_num, rewards_list, False)
         return
 
     done        = False
@@ -293,7 +294,6 @@ def run_task_level(client, task_level: str):
             prompt = "Respond with a default JSON triage action."
 
         # ── Call LLM ──────────────────────────
-        print("STEP")
 
         action_dict = {}
 
@@ -399,6 +399,17 @@ def run_task_level(client, task_level: str):
             log.info(f"    {score_symbol}  Reward: {score:+.4f}   |  {msg}")
         except Exception as e:
             _warn(f"[{task_level}] Step {step_num}: Failed to process reward: {e}")
+            score = 0.0
+
+        rewards_list.append(score)
+
+        try:
+            err_val = info.get("error")
+            err_str = str(err_val) if err_val else "null"
+            action_str = json.dumps(action_dict).replace('"', "'")
+            print(f"[STEP] step={step_num} action=\"{action_str}\" reward={score:.2f} done={str(done).lower()} error={err_str}")
+        except Exception:
+            pass
 
         try:
             if info.get("error"):
@@ -412,11 +423,12 @@ def run_task_level(client, task_level: str):
         _warn(f"[{task_level}] No steps completed — using fallback score 0.5")
 
     total_score = _clamp_score(total_score)
-    _report_summary(task_level, total_score, step_num)
+    success = total_score > 0.0
+    _report_summary(task_level, total_score, step_num, rewards_list, success)
 
 
-def _report_summary(task_level: str, total_score: float, step_num: int):
-    """Always logs the end-of-task summary and prints END marker."""
+def _report_summary(task_level: str, total_score: float, step_num: int, rewards_list: list, success: bool):
+    """Always logs the end-of-task summary and prints [END] marker."""
     try:
         total_score = _clamp_score(total_score)
         log.info("")
@@ -428,7 +440,8 @@ def _report_summary(task_level: str, total_score: float, step_num: int):
         log.error(f"[{task_level}] _report_summary failed: {e}")
     finally:
         try:
-            print("END")
+            rewards_str = ",".join([f"{r:.2f}" for r in rewards_list]) if rewards_list else "0.00"
+            print(f"[END] success={str(success).lower()} steps={step_num} score={total_score:.2f} rewards={rewards_str}")
         except Exception:
             pass
 
