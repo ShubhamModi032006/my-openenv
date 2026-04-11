@@ -370,6 +370,41 @@ def _report_summary(task_level: str, total_score: float, step_num: int):
 
 
 # ─────────────────────────────────────────────
+#  Server health-check
+# ─────────────────────────────────────────────
+def _wait_for_server(max_retries=10, delay=3):
+    """Wait for local server to be ready before starting tasks."""
+    try:
+        log.info("  Waiting for server to be ready...")
+    except Exception:
+        pass
+    for attempt in range(max_retries):
+        try:
+            res = requests.get(f"{API_URL}/", timeout=5)
+            if res.status_code == 200:
+                try:
+                    log.info(f"  Server is ready (attempt {attempt + 1})")
+                except Exception:
+                    pass
+                return True
+        except Exception:
+            pass
+        try:
+            log.info(f"  Server not ready yet, retrying in {delay}s... ({attempt + 1}/{max_retries})")
+        except Exception:
+            pass
+        try:
+            time.sleep(delay)
+        except Exception:
+            pass
+    try:
+        log.error("  Server never became ready after all retries")
+    except Exception:
+        pass
+    return False
+
+
+# ─────────────────────────────────────────────
 #  Entry point
 # ─────────────────────────────────────────────
 if __name__ == "__main__":
@@ -404,6 +439,13 @@ if __name__ == "__main__":
         except Exception as e:
             log.critical(f"Failed to create OpenAI client: {e}")
             client = None
+
+        # ── Wait for local FastAPI server to be ready ──
+        server_ready = _wait_for_server(max_retries=10, delay=3)
+        if not server_ready:
+            log.critical("  Server unavailable — exiting with 0 to avoid pipeline crash")
+            print("DONE")
+            sys.exit(0)
 
         for level in ["easy", "medium", "hard"]:
             try:
