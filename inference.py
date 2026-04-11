@@ -9,7 +9,7 @@ from openai import OpenAI
 from dotenv import load_dotenv
 
 try:
-    load_dotenv()
+    load_dotenv(override=True)  # override=True ensures .env always wins over system env vars
 except Exception as _e:
     print(f"[WARN] load_dotenv failed: {_e}", file=sys.stderr)
 
